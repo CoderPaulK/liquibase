@@ -1,6 +1,9 @@
 package liquibase.changelog;
 
+import liquibase.ContextExpression;
+import liquibase.Labels;
 import liquibase.change.CheckSum;
+import liquibase.changelog.ChangeSet.ExecType;
 import liquibase.database.Database;
 import liquibase.database.OfflineConnection;
 import liquibase.exception.DatabaseException;
@@ -21,15 +24,17 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
+import java.util.*;
 
 @LiquibaseService(skip = true)
 public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryService {
 
     private final File changeLogFile;
-    private boolean executeAgainstDatabase = true;
+    private boolean executeDmlAgainstDatabase = true;
+    /**
+     * Output CREATE TABLE LIQUIBASECHANGELOG or not
+     */
+    private boolean executeDdlAgainstDatabase = true;
     private int COLUMN_ID = 0;
     private int COLUMN_AUTHOR = 1;
     private int COLUMN_FILENAME = 2;
@@ -41,11 +46,14 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
     private int COLUMN_COMMENTS = 8;
     private int COLUMN_TAG = 9;
     private int COLUMN_LIQUIBASE = 10;
+    private int COLUMN_CONTEXTS = 11;
+    private int COLUMN_LABELS = 12;
     private Integer lastChangeSetSequenceValue;
 
-    public OfflineChangeLogHistoryService(Database database, File changeLogFile, boolean executeAgainstDatabase) {
+    public OfflineChangeLogHistoryService(Database database, File changeLogFile, boolean executeDmlAgainstDatabase, boolean executeDdlAgainstDatabase) {
         setDatabase(database);
-        this.executeAgainstDatabase = executeAgainstDatabase;
+        this.executeDmlAgainstDatabase = executeDmlAgainstDatabase;
+        this.executeDdlAgainstDatabase = executeDdlAgainstDatabase;
 
         changeLogFile = changeLogFile.getAbsoluteFile();
         this.changeLogFile = changeLogFile;
@@ -61,13 +69,22 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
         return database.getConnection() != null && database.getConnection() instanceof OfflineConnection;
     }
 
-    public boolean isExecuteAgainstDatabase() {
-        return executeAgainstDatabase;
+    public boolean isExecuteDmlAgainstDatabase() {
+        return executeDmlAgainstDatabase;
     }
 
-    public void setExecuteAgainstDatabase(boolean executeAgainstDatabase) {
-        this.executeAgainstDatabase = executeAgainstDatabase;
+    public void setExecuteDmlAgainstDatabase(boolean executeDmlAgainstDatabase) {
+        this.executeDmlAgainstDatabase = executeDmlAgainstDatabase;
     }
+
+    public boolean isExecuteDdlAgainstDatabase() {
+        return executeDdlAgainstDatabase;
+    }
+
+    public void setExecuteDdlAgainstDatabase(boolean executeDdlAgainstDatabase) {
+        this.executeDdlAgainstDatabase = executeDdlAgainstDatabase;
+    }
+
 
     @Override
     public void reset() {
@@ -82,7 +99,7 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
                 changeLogFile.createNewFile();
                 writeHeader(changeLogFile);
 
-                if (isExecuteAgainstDatabase()) {
+                if (isExecuteDdlAgainstDatabase()) {
                     ExecutorService.getInstance().getExecutor(getDatabase()).execute(new CreateDatabaseChangeLogTableStatement());
                 }
 
@@ -110,7 +127,9 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
                     "DESCRIPTION",
                     "COMMENTS",
                     "TAG",
-                    "LIQUIBASE"
+                    "LIQUIBASE",
+                    "CONTEXTS",
+                    "LABELS"                    
             });
         } finally {
             if (writer != null) {
@@ -122,7 +141,7 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
 
     @Override
     protected void replaceChecksum(final ChangeSet changeSet) throws DatabaseException {
-        if (isExecuteAgainstDatabase()) {
+        if (isExecuteDmlAgainstDatabase()) {
             ExecutorService.getInstance().getExecutor(getDatabase()).execute(new UpdateChangeSetChecksumStatement(changeSet));
         }
         replaceChangeSet(changeSet, new ReplaceChangeSetLogic() {
@@ -147,6 +166,15 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
 
             List<RanChangeSet> returnList = new ArrayList<RanChangeSet>();
             while ((line = csvReader.readNext()) != null) {
+                ContextExpression contexts = new ContextExpression();
+                if (line.length > COLUMN_CONTEXTS) {
+                    contexts = new ContextExpression(line[COLUMN_CONTEXTS]);
+                }
+                Labels labels = new Labels();
+                if (line.length > COLUMN_LABELS) {
+                    labels = new Labels(line[COLUMN_LABELS]);
+                }
+
                 returnList.add(new RanChangeSet(
                         line[COLUMN_FILENAME],
                         line[COLUMN_ID],
@@ -156,7 +184,9 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
                         line[COLUMN_TAG],
                         ChangeSet.ExecType.valueOf(line[COLUMN_EXECTYPE]),
                         line[COLUMN_DESCRIPTION],
-                        line[COLUMN_COMMENTS]));
+                        line[COLUMN_COMMENTS],
+                        contexts,
+                        labels));
             }
 
             return returnList;
@@ -237,7 +267,7 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
                 csvWriter.writeNext(line);
             }
 
-            String[] newLine = new String[11];
+            String[] newLine = new String[13];
             newLine[COLUMN_ID] = changeSet.getId();
             newLine[COLUMN_AUTHOR] = changeSet.getAuthor();
             newLine[COLUMN_FILENAME] =  changeSet.getFilePath();
@@ -249,6 +279,10 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
             newLine[COLUMN_COMMENTS] = changeSet.getComments();
             newLine[COLUMN_TAG] = "";
             newLine[COLUMN_LIQUIBASE] = LiquibaseUtil.getBuildVersion().replaceAll("SNAPSHOT", "SNP");
+            if (newLine.length > 11) {
+                newLine[COLUMN_CONTEXTS] = changeSet.getContexts() == null ? null : changeSet.getContexts().toString();
+                newLine[COLUMN_LABELS] = changeSet.getLabels() == null ? null : changeSet.getLabels().toString();
+            }
 
             csvWriter.writeNext(newLine);
 
@@ -280,7 +314,7 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
 
     @Override
     public void setExecType(final ChangeSet changeSet, final ChangeSet.ExecType execType) throws DatabaseException {
-        if (isExecuteAgainstDatabase()) {
+        if (isExecuteDmlAgainstDatabase()) {
             ExecutorService.getInstance().getExecutor(getDatabase()).execute(new MarkChangeSetRanStatement(changeSet, execType));
             getDatabase().commit();
         }
@@ -304,7 +338,7 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
 
     @Override
     public void removeFromHistory(ChangeSet changeSet) throws DatabaseException {
-        if (isExecuteAgainstDatabase()) {
+        if (isExecuteDmlAgainstDatabase()) {
             ExecutorService.getInstance().getExecutor(getDatabase()).execute(new RemoveChangeSetRanStatusStatement(changeSet));
             getDatabase().commit();
         }
@@ -349,12 +383,35 @@ public class OfflineChangeLogHistoryService extends AbstractChangeLogHistoryServ
     }
 
     @Override
-    public void tag(String tagString) throws DatabaseException {
+    public void tag(final String tagString) throws DatabaseException {
+        RanChangeSet last = null;
+        List<RanChangeSet> ranChangeSets = getRanChangeSets();
+        if (ranChangeSets.isEmpty()) {
+            ChangeSet emptyChangeSet = new ChangeSet(String.valueOf(new Date().getTime()), "liquibase", false, false, "liquibase-internal", null, null, getDatabase().getObjectQuotingStrategy(), null);
+            appendChangeSet(emptyChangeSet, ExecType.EXECUTED);
+            last = new RanChangeSet(emptyChangeSet);
+        } else {
+            last = ranChangeSets.get(ranChangeSets.size() - 1);
+        }
 
+        ChangeSet lastChangeSet = new ChangeSet(last.getId(), last.getAuthor(), false, false, last.getChangeLog(), null, null, true, null, null);
+        replaceChangeSet(lastChangeSet, new ReplaceChangeSetLogic() {
+            @Override
+            public String[] execute(String[] line) {
+                line[COLUMN_TAG] = tagString;
+                return line;
+            }
+        });
     }
 
     @Override
     public boolean tagExists(String tag) throws DatabaseException {
+        List<RanChangeSet> ranChangeSets = getRanChangeSets();
+        for (RanChangeSet changeset : ranChangeSets) {
+            if (tag.equals(changeset.getTag())) {
+                return true;
+            }
+        }
         return false;
     }
 

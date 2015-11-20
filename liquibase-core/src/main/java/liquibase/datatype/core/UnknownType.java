@@ -35,39 +35,11 @@ public class UnknownType extends LiquibaseDataType {
             dataTypeMaxParameters = database.getDataTypeMaxParameters(getName());
         }
         Object[] parameters = getParameters();
-        if (database instanceof MySQLDatabase && (
-                getName().equalsIgnoreCase("TINYBLOB")
-                        || getName().equalsIgnoreCase("MEDIUMBLOB")
-                        || getName().equalsIgnoreCase("TINYTEXT")
-                        || getName().equalsIgnoreCase("MEDIUMTEXT")
-                        || getName().equalsIgnoreCase("REAL")
-        )) {
-            parameters = new Object[0];
-        }
-
-        if (database instanceof DB2Database && (getName().equalsIgnoreCase("REAL") || getName().equalsIgnoreCase("XML"))) {
-            parameters = new Object[0];
-        }
-
-        if (database instanceof MSSQLDatabase && (
-                getName().equalsIgnoreCase("REAL")
-                || getName().equalsIgnoreCase("XML")
-                || getName().equalsIgnoreCase("HIERARCHYID")
-                || getName().equalsIgnoreCase("DATETIMEOFFSET")
-                || getName().equalsIgnoreCase("IMAGE")
-                || getName().equalsIgnoreCase("NTEXT")
-                || getName().equalsIgnoreCase("SYSNAME")
-                || getName().equalsIgnoreCase("SMALLMONEY")
-        )) {
-            parameters = new Object[0];
-        }
 
         if (database instanceof OracleDatabase) {
             if (getName().equalsIgnoreCase("LONG")
-                    || getName().equalsIgnoreCase("NCLOB")
                     || getName().equalsIgnoreCase("BFILE")
                     || getName().equalsIgnoreCase("ROWID")
-                    || getName().equalsIgnoreCase("XMLTYPE")
                     || getName().equalsIgnoreCase("ANYDATA")
                     || getName().equalsIgnoreCase("SDO_GEOMETRY")
                     ) {
@@ -82,7 +54,12 @@ public class UnknownType extends LiquibaseDataType {
         if (dataTypeMaxParameters < parameters.length) {
             parameters = Arrays.copyOfRange(parameters, 0, dataTypeMaxParameters);
         }
-        DatabaseDataType type = new DatabaseDataType(getName().toUpperCase(), parameters);
+        DatabaseDataType type;
+        if (database instanceof  MSSQLDatabase) {
+            type = new DatabaseDataType(database.escapeDataTypeName(getName()), parameters);
+        } else {
+            type = new DatabaseDataType(getName().toUpperCase(), parameters);
+        }
         type.addAdditionalInformation(getAdditionalInformation());
 
         return type;

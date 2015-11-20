@@ -1,5 +1,6 @@
 package liquibase.dbdoc;
 
+import liquibase.structure.DatabaseObject;
 import liquibase.util.StringUtils;
 
 import java.io.File;
@@ -38,7 +39,7 @@ public class HTMLListWriter {
                 fileWriter.append("<A HREF=\"");
                 fileWriter.append(directory);
                 fileWriter.append("/");
-                fileWriter.append(DBDocUtil.toFileName(object.toString().toLowerCase()));
+                fileWriter.append(DBDocUtil.toFileName(object.toString().endsWith(".xml") ? object.toString() : object.toString().toLowerCase()));
                 fileWriter.append(getTargetExtension());
                 fileWriter.append("\" target=\"objectFrame\">");
                 fileWriter.append(StringUtils.escapeHtml(object.toString()));

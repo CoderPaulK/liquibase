@@ -5,12 +5,14 @@ import liquibase.database.jvm.JdbcConnection;
 import liquibase.exception.DatabaseException;
 import liquibase.exception.UnexpectedLiquibaseException;
 import liquibase.logging.LogFactory;
+import liquibase.logging.Logger;
 import liquibase.resource.ResourceAccessor;
 import liquibase.servicelocator.ServiceLocator;
 import liquibase.util.StringUtils;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.lang.reflect.InvocationTargetException;
 import java.sql.Connection;
 import java.sql.Driver;
 import java.util.*;
@@ -19,14 +21,20 @@ public class DatabaseFactory {
     private static DatabaseFactory instance;
     private Map<String, SortedSet<Database>> implementedDatabases = new HashMap<String, SortedSet<Database>>();
     private Map<String, SortedSet<Database>> internalDatabases = new HashMap<String, SortedSet<Database>>();
+    private Logger log;
 
     private DatabaseFactory() {
+        log = new LogFactory().getLog();
         try {
             Class[] classes = ServiceLocator.getInstance().findClasses(Database.class);
 
             //noinspection unchecked
             for (Class<? extends Database> clazz : classes) {
-                register(clazz.getConstructor().newInstance());
+                try {
+                    register(clazz.getConstructor().newInstance());
+                } catch (Throwable e) {
+                    throw new UnexpectedLiquibaseException("Error registering "+clazz.getName(), e);
+                }
             }
 
         } catch (Exception e) {
@@ -107,7 +115,7 @@ public class DatabaseFactory {
         }
 
         if (foundDatabases.size() == 0) {
-            LogFactory.getLogger().warning("Unknown database: " + connection.getDatabaseProductName());
+            log.warning("Unknown database: " + connection.getDatabaseProductName());
             UnsupportedDatabase unsupportedDB = new UnsupportedDatabase();
             unsupportedDB.setConnection(connection);
             return unsupportedDB;
@@ -161,7 +169,7 @@ public class DatabaseFactory {
                                              String propertyProviderClass,
                                              ResourceAccessor resourceAccessor) throws DatabaseException {
         if (url.startsWith("offline:")) {
-            return new OfflineConnection(url);
+            return new OfflineConnection(url, resourceAccessor);
         }
 
         driver = StringUtils.trimToNull(driver);

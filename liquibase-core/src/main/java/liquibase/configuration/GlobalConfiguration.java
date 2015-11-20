@@ -15,6 +15,9 @@ public class GlobalConfiguration extends AbstractConfigurationContainer {
     public static final String OUTPUT_ENCODING = "outputFileEncoding";
     public static final String CHANGELOGLOCK_WAIT_TIME = "changeLogLockWaitTimeInMinutes";
     public static final String CHANGELOGLOCK_POLL_RATE = "changeLogLockPollRate";
+    public static final String CONVERT_DATA_TYPES = "convertDataTypes";
+    public static final String GENERATE_CHANGESET_CREATED_VALUES = "generateChangeSetCreatedValues";
+    public static final String AUTO_REORG = "autoReorg";
 
     public GlobalConfiguration() {
         super("liquibase");
@@ -55,8 +58,20 @@ public class GlobalConfiguration extends AbstractConfigurationContainer {
 
         getContainer().addProperty(OUTPUT_ENCODING, String.class)
                 .setDescription("Encoding to output text in. Defaults to file.encoding system property or UTF-8")
-                .setDefaultValue(System.getProperty("file.encoding") == null ? "UTF-8" : System.getProperty("file.encoding"))
+                .setDefaultValue("UTF-8")
                 .addAlias("file.encoding");
+
+        getContainer().addProperty(CONVERT_DATA_TYPES, Boolean.class)
+                .setDescription("Should Liquibase convert to/from standard data types. Applies to both snapshot and update commands.")
+                .setDefaultValue(true);
+
+        getContainer().addProperty(GENERATE_CHANGESET_CREATED_VALUES, Boolean.class)
+                .setDescription("Should Liquibase include a 'created' attribute in diff/generateChangeLog changeSets with the current datetime")
+                .setDefaultValue(false);
+
+        getContainer().addProperty(AUTO_REORG, Boolean.class)
+                .setDescription("Should Liquibase automatically include REORG TABLE commands when needed?")
+                .setDefaultValue(true);
     }
 
     /**

@@ -9,13 +9,17 @@ import liquibase.datatype.LiquibaseDataType;
 import liquibase.datatype.core.*;
 import liquibase.logging.LogFactory;
 import liquibase.statement.DatabaseFunction;
+import liquibase.structure.core.Column;
 import liquibase.structure.core.DataType;
 
 import java.math.BigDecimal;
 import java.sql.Types;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Scanner;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class SqlUtil {
 
@@ -97,8 +101,10 @@ public class SqlUtil {
             }
         }
 
+        boolean strippedSingleQuotes = false;
         if (stringVal.startsWith("'") && stringVal.endsWith("'")) {
             stringVal = stringVal.substring(1, stringVal.length() - 1);
+            strippedSingleQuotes = true;
         } else if (stringVal.startsWith("((") && stringVal.endsWith("))")) {
             stringVal = stringVal.substring(2, stringVal.length() - 2);
         } else if (stringVal.startsWith("('") && stringVal.endsWith("')")) {
@@ -119,8 +125,8 @@ public class SqlUtil {
         } else if (typeId == Types.BINARY) {
             return new DatabaseFunction(stringVal.trim());
         } else if (typeId == Types.BIT) {
-            if (stringVal.startsWith("b'")) { //mysql returns boolean values as b'0' and b'1'
-                stringVal = stringVal.replaceFirst("b'", "").replaceFirst("'$", "");
+            if (stringVal.startsWith("b'") || stringVal.startsWith("B'")) { //mysql returns boolean values as b'0' and b'1'
+                stringVal = stringVal.replaceFirst("b'", "").replaceFirst("B'", "").replaceFirst("'$", "");
             }
             stringVal = stringVal.trim();
             if (scanner.hasNextBoolean()) {
@@ -129,7 +135,11 @@ public class SqlUtil {
                 return new Integer(stringVal);
             }
         } else if (liquibaseDataType instanceof BlobType|| typeId == Types.BLOB) {
-            return new DatabaseFunction(stringVal);
+            if (strippedSingleQuotes) {
+                return stringVal;
+            } else {
+                return new DatabaseFunction(stringVal);
+            }
         } else if ((liquibaseDataType instanceof BooleanType || typeId == Types.BOOLEAN )) {
             if (scanner.hasNextBoolean()) {
                 return scanner.nextBoolean();
@@ -181,7 +191,7 @@ public class SqlUtil {
             return new DatabaseFunction(stringVal);
         } else if (typeId == Types.LONGVARCHAR) {
             return stringVal;
-        } else if (liquibaseDataType instanceof NCharType || typeId == Types.NCHAR) {
+        } else if (liquibaseDataType instanceof NCharType || typeId == Types.NCHAR || liquibaseDataType.getName().equalsIgnoreCase("NCLOB")) {
             return stringVal;
         } else if (typeId == Types.NCLOB) {
             return stringVal;
@@ -236,5 +246,29 @@ public class SqlUtil {
             LogFactory.getLogger().info("Unknown default value: value '" + stringVal + "' type " + typeName + " (" + type + "), assuming it is a function");
             return new DatabaseFunction(stringVal);
         }
+    }
+
+    public static String replacePredicatePlaceholders(Database database, String predicate, List<String> columnNames, List<Object> parameters) {
+        Matcher matcher = Pattern.compile(":name|\\?|:value").matcher(predicate.trim());
+        StringBuffer sb = new StringBuffer();
+        Iterator<String> columnNameIter = columnNames.iterator();
+        Iterator<Object> paramIter = parameters.iterator();
+        while (matcher.find()) {
+            if (matcher.group().equals(":name")) {
+                while (columnNameIter.hasNext()) {
+                    String columnName = columnNameIter.next();
+                    if (columnName == null) {
+                        continue;
+                    }
+                    matcher.appendReplacement(sb, Matcher.quoteReplacement(database.escapeObjectName(columnName, Column.class)));
+                    break;
+                }
+            } else if (paramIter.hasNext()) {
+                Object param = paramIter.next();
+                matcher.appendReplacement(sb, Matcher.quoteReplacement(DataTypeFactory.getInstance().fromObject(param, database).objectToSql(param, database)));
+            }
+        }
+        matcher.appendTail(sb);
+        return sb.toString();
     }
 }

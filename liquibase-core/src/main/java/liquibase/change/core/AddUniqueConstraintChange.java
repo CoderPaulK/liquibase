@@ -25,6 +25,10 @@ public class AddUniqueConstraintChange extends AbstractChange {
     private Boolean initiallyDeferred;
     private Boolean disabled;
 
+    private String forIndexName;
+    private String forIndexSchemaName;
+    private String forIndexCatalogName;
+
     @DatabaseChangeProperty(mustEqualExisting ="column.relation.catalog", since = "3.0")
     public String getCatalogName() {
         return catalogName;
@@ -105,6 +109,30 @@ public class AddUniqueConstraintChange extends AbstractChange {
         this.disabled = disabled;
     }
 
+    public String getForIndexName() {
+        return forIndexName;
+    }
+
+    public void setForIndexName(String forIndexName) {
+        this.forIndexName = forIndexName;
+    }
+
+    public String getForIndexSchemaName() {
+        return forIndexSchemaName;
+    }
+
+    public void setForIndexSchemaName(String forIndexSchemaName) {
+        this.forIndexSchemaName = forIndexSchemaName;
+    }
+
+    public String getForIndexCatalogName() {
+        return forIndexCatalogName;
+    }
+
+    public void setForIndexCatalogName(String forIndexCatalogName) {
+        this.forIndexCatalogName = forIndexCatalogName;
+    }
+
     @Override
     public SqlStatement[] generateStatements(Database database) {
 
@@ -133,6 +161,10 @@ public class AddUniqueConstraintChange extends AbstractChange {
                         .setInitiallyDeferred(initiallyDeferred)
                         .setDisabled(disabled);
 
+        statement.setForIndexName(getForIndexName());
+        statement.setForIndexSchemaName(getForIndexSchemaName());
+        statement.setForIndexCatalogName(getForIndexCatalogName());
+
         return new SqlStatement[] { statement };
     }
 
@@ -141,12 +173,7 @@ public class AddUniqueConstraintChange extends AbstractChange {
     public ChangeStatus checkStatus(Database database) {
         ChangeStatus result = new ChangeStatus();
         try {
-            String[] columnNames = getColumnNames().split("\\s+,\\s+");
-            Column[] columns = new Column[columnNames.length];
-            for (int i=0; i<columnNames.length; i++) {
-                columns[i] = new Column(columnNames[i]);
-            }
-            UniqueConstraint example = new UniqueConstraint(getConstraintName(), getCatalogName(), getSchemaName(), getTableName(), columns);
+            UniqueConstraint example = new UniqueConstraint(getConstraintName(), getCatalogName(), getSchemaName(), getTableName(), Column.arrayFromNames(getColumnNames()));
 
             UniqueConstraint snapshot = SnapshotGeneratorFactory.getInstance().createSnapshot(example, database);
             result.assertComplete(snapshot != null, "Unique constraint does not exist");

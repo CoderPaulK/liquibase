@@ -1,5 +1,6 @@
 package liquibase.resource;
 
+import liquibase.logging.LogFactory;
 import liquibase.util.FileUtil;
 import liquibase.util.StringUtils;
 
@@ -39,7 +40,11 @@ public class ClassLoaderResourceAccessor extends AbstractResourceAccessor {
                 continue;
             }
             seenUrls.add(url.toExternalForm());
-            InputStream resourceAsStream = url.openStream();
+            LogFactory.getInstance().getLog().debug("Opening "+url.toExternalForm()+" as "+path);
+
+            URLConnection connection = url.openConnection();
+            connection.setUseCaches(false);
+            InputStream resourceAsStream = connection.getInputStream();
             if (resourceAsStream != null) {
                 returnSet.add(resourceAsStream);
             }
@@ -56,6 +61,10 @@ public class ClassLoaderResourceAccessor extends AbstractResourceAccessor {
 
         Set<String> returnSet = new HashSet<String>();
 
+        if (!fileUrls.hasMoreElements() && (path.startsWith("jar:") || path.startsWith("file:"))) {
+            fileUrls = new Vector<URL>(Arrays.asList(new URL(path))).elements();
+        }
+
         while (fileUrls.hasMoreElements()) {
             URL fileUrl = fileUrls.nextElement();
             if (!fileUrl.toExternalForm().startsWith("file:")) {
@@ -64,7 +73,8 @@ public class ClassLoaderResourceAccessor extends AbstractResourceAccessor {
                         || fileUrl.toExternalForm().startsWith("zip:")) {
 
                     String file = fileUrl.getFile();
-                    String splitPath = file.split("!")[0];
+                    String[] zipAndFile = file.split("!");
+                    String splitPath = zipAndFile[0];
                     if (splitPath.matches("file:\\/[A-Za-z]:\\/.*")) {
                         splitPath = splitPath.replaceFirst("file:\\/", "");
                     } else {
@@ -81,7 +91,11 @@ public class ClassLoaderResourceAccessor extends AbstractResourceAccessor {
                     if (path.startsWith("classpath*:")) {
                         path = path.replaceFirst("classpath\\*:", "");
                     }
-                    URI fileUri = new File(zipFileDir, path).toURI();
+                    File dirInZip = new File(zipFileDir, zipAndFile[1]);
+                    if (!dirInZip.exists()) {
+                        dirInZip = new File(zipFileDir, path);
+                    }
+                    URI fileUri = dirInZip.toURI();
                     fileUrl = fileUri.toURL();
                 }
             }

@@ -95,8 +95,10 @@ public class Index extends AbstractDatabaseObject {
     }
 
     public Index setColumns(List<Column> columns) {
-        for (Column column :columns) {
-            column.setRelation(getTable());
+        if (getAttribute("table", Object.class) instanceof Table) {
+            for (Column column :columns) {
+                column.setRelation(getTable());
+            }
         }
         setAttribute("columns", columns);
         return this;
@@ -199,7 +201,7 @@ public class Index extends AbstractDatabaseObject {
     public String toString() {
         StringBuffer stringBuffer = new StringBuffer();
         stringBuffer.append(getName());
-        if (this.isUnique() != null && !this.isUnique()) {
+        if (this.isUnique() != null && this.isUnique()) {
             stringBuffer.append(" unique ");
         }
         if (getTable() != null && getColumns() != null) {

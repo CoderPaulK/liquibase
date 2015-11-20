@@ -4,10 +4,14 @@ import liquibase.changelog.ChangeLogHistoryService;
 import liquibase.changelog.ChangeLogHistoryServiceFactory;
 import liquibase.changelog.OfflineChangeLogHistoryService;
 import liquibase.exception.DatabaseException;
+import liquibase.exception.LiquibaseException;
 import liquibase.exception.UnexpectedLiquibaseException;
-import liquibase.lockservice.LockService;
-import liquibase.lockservice.LockServiceFactory;
 import liquibase.logging.LogFactory;
+import liquibase.parser.SnapshotParser;
+import liquibase.parser.SnapshotParserFactory;
+import liquibase.resource.ResourceAccessor;
+import liquibase.snapshot.DatabaseSnapshot;
+import liquibase.structure.core.Catalog;
 import liquibase.util.ObjectUtil;
 import liquibase.util.StringUtils;
 
@@ -21,18 +25,21 @@ public class OfflineConnection implements DatabaseConnection {
     private final String url;
     private final String databaseShortName;
     private final Map<String, String> params = new HashMap<String, String>();
-    private boolean outputLiquibaseSql = false;
+    private DatabaseSnapshot snapshot = null;
+    private OutputLiquibaseSql outputLiquibaseSql = OutputLiquibaseSql.NONE;
     private String changeLogFile = "databasechangelog.csv";
-    private Boolean caseSensitive = false;
+    private boolean caseSensitive = false;
     private String productName;
     private String productVersion;
     private int databaseMajorVersion = 999;
     private int databaseMinorVersion = 999;
     private String catalog;
+    private boolean sendsStringParametersAsUnicode = true;
 
     private final Map<String, String> databaseParams = new HashMap<String, String>();
+    private String connectionUserName;
 
-    public OfflineConnection(String url) {
+    public OfflineConnection(String url, ResourceAccessor resourceAccessor) {
         this.url = url;
         Matcher matcher = Pattern.compile("offline:(\\w+)\\??(.*)").matcher(url);
         if (!matcher.matches()) {
@@ -68,11 +75,28 @@ public class OfflineConnection implements DatabaseConnection {
             } else if (paramEntry.getKey().equals("catalog")) {
                 this.catalog = this.params.get("catalog");
             } else if (paramEntry.getKey().equals("caseSensitive")) {
-                 this.caseSensitive = Boolean.valueOf(paramEntry.getValue());
+                 this.caseSensitive = Boolean.parseBoolean(paramEntry.getValue());
             } else if (paramEntry.getKey().equals("changeLogFile")) {
                 this.changeLogFile = paramEntry.getValue();
             } else if (paramEntry.getKey().equals("outputLiquibaseSql")) {
-                this.outputLiquibaseSql = Boolean.valueOf(paramEntry.getValue());
+                this.outputLiquibaseSql = OutputLiquibaseSql.fromString(paramEntry.getValue());
+            } else if (paramEntry.getKey().equals("snapshot")) {
+                String snapshotFile = paramEntry.getValue();
+                try {
+                    SnapshotParser parser = SnapshotParserFactory.getInstance().getParser(snapshotFile, resourceAccessor);
+                    this.snapshot = parser.parse(snapshotFile, resourceAccessor);
+                    this.snapshot.getDatabase().setConnection(this);
+
+                    for (Catalog catalog : this.snapshot.get(Catalog.class)) {
+                        if (catalog.isDefault()) {
+                            this.catalog = catalog.getName();
+                        }
+                    }
+                } catch (LiquibaseException e) {
+                    throw new UnexpectedLiquibaseException("Cannot parse snapshot " + url, e);
+                }
+            } else if (paramEntry.getKey().equals("sendsStringParametersAsUnicode")) {
+                this.sendsStringParametersAsUnicode = Boolean.parseBoolean(paramEntry.getValue());
             } else {
                 this.databaseParams.put(paramEntry.getKey(), paramEntry.getValue());
             }
@@ -100,7 +124,14 @@ public class OfflineConnection implements DatabaseConnection {
     }
 
     protected ChangeLogHistoryService createChangeLogHistoryService(Database database) {
-        return new OfflineChangeLogHistoryService(database, new File(changeLogFile), outputLiquibaseSql);
+        return new OfflineChangeLogHistoryService(database, new File(changeLogFile),
+            outputLiquibaseSql != OutputLiquibaseSql.NONE, // Output DML
+            outputLiquibaseSql == OutputLiquibaseSql.ALL   // Output DDL
+        );
+    }
+
+    public DatabaseSnapshot getSnapshot() {
+        return snapshot;
     }
 
     @Override
@@ -153,6 +184,22 @@ public class OfflineConnection implements DatabaseConnection {
         return databaseMajorVersion;
     }
 
+    public void setDatabaseMajorVersion(int databaseMajorVersion) {
+        this.databaseMajorVersion = databaseMajorVersion;
+    }
+
+    public void setDatabaseMinorVersion(int databaseMinorVersion) {
+        this.databaseMinorVersion = databaseMinorVersion;
+    }
+
+    public void setProductVersion(String productVersion) {
+        this.productVersion = productVersion;
+    }
+
+    public void setProductName(String productName) {
+        this.productName = productName;
+    }
+
     @Override
     public int getDatabaseMinorVersion() throws DatabaseException {
         return databaseMinorVersion;
@@ -165,7 +212,11 @@ public class OfflineConnection implements DatabaseConnection {
 
     @Override
     public String getConnectionUserName() {
-        return null;
+        return connectionUserName;
+    }
+
+    public void setConnectionUserName(String connectionUserName) {
+        this.connectionUserName = connectionUserName;
     }
 
     @Override
@@ -173,11 +224,52 @@ public class OfflineConnection implements DatabaseConnection {
         return false;
     }
 
-    public boolean getOutputLiquibaseSql() {
-        return outputLiquibaseSql;
+    /**
+     * Output Liquibase SQL
+     */
+    private static enum OutputLiquibaseSql {
+        /**
+         * Don't output anything
+         */
+        NONE,
+        /**
+         * Output only INSERT/UPDATE/DELETE
+         */
+        DATA_ONLY,
+        /**
+         * Output CREATE TABLE as well
+         */
+        ALL;
+
+        public static OutputLiquibaseSql fromString(String s) {
+            if (s == null) {
+                return null;
+            }
+            s = s.toUpperCase();
+            // For backward compatibility true is translated in ALL and false in NONE
+            if (s.equals("TRUE")) {
+                return ALL;
+            } else if (s.equals("FALSE")) {
+                return NONE;
+            } else {
+                return valueOf(s);
+            }
+        }
     }
 
-    public void setOutputLiquibaseSql(Boolean outputLiquibaseSql) {
-        this.outputLiquibaseSql = outputLiquibaseSql;
+    public boolean getSendsStringParametersAsUnicode() {
+        return sendsStringParametersAsUnicode;
+    }
+
+    public void setSendsStringParametersAsUnicode(boolean sendsStringParametersAsUnicode) {
+        this.sendsStringParametersAsUnicode = sendsStringParametersAsUnicode;
+    }
+
+    public boolean isCaseSensitive() {
+        return caseSensitive;
+    }
+
+    public void setCaseSensitive(boolean caseSensitive) {
+        this.caseSensitive = caseSensitive;
     }
 }

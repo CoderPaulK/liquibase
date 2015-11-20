@@ -1,29 +1,46 @@
 package liquibase.change.core;
 
-import liquibase.change.*;
+import liquibase.change.AbstractChange;
+import liquibase.change.ChangeMetaData;
+import liquibase.change.ChangeStatus;
+import liquibase.change.ChangeWithColumns;
+import liquibase.change.CheckSum;
+import liquibase.change.ColumnConfig;
+import liquibase.change.DatabaseChange;
+import liquibase.change.DatabaseChangeProperty;
 import liquibase.database.AbstractJdbcDatabase;
 import liquibase.database.Database;
+import liquibase.database.core.MSSQLDatabase;
+import liquibase.database.core.MySQLDatabase;
+import liquibase.database.core.PostgresDatabase;
 import liquibase.exception.UnexpectedLiquibaseException;
 import liquibase.exception.Warnings;
+import liquibase.io.EmptyLineAndCommentSkippingInputStream;
 import liquibase.logging.LogFactory;
 import liquibase.logging.Logger;
 import liquibase.resource.ResourceAccessor;
 import liquibase.resource.UtfBomAwareReader;
 import liquibase.statement.SqlStatement;
+import liquibase.statement.core.InsertOrUpdateStatement;
+import liquibase.statement.core.InsertSetStatement;
 import liquibase.statement.core.InsertStatement;
 import liquibase.structure.core.Column;
+import liquibase.util.BooleanParser;
 import liquibase.util.StreamUtil;
 import liquibase.util.StringUtils;
 import liquibase.util.csv.CSVReader;
 
-import java.io.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.Reader;
 import java.util.ArrayList;
 import java.util.List;
-import liquibase.util.BooleanParser;
 
 
 @DatabaseChange(name="loadData",
         description = "Loads data from a CSV file into an existing table. A value of NULL in a cell will be converted to a database NULL rather than the string 'NULL'\n" +
+                "Lines starting with # (hash) sign are treated as comments. You can change comment pattern by specifying 'commentLineStartsWith' property in loadData tag." +
+                "To disable comments set 'commentLineStartsWith' to empty value'\n"+
                 "\n" +
                 "Date/Time values included in the CSV file should be in ISO formathttp://en.wikipedia.org/wiki/ISO_8601 in order to be parsed correctly by Liquibase. Liquibase will initially set the date format to be 'yyyy-MM-dd'T'HH:mm:ss' and then it checks for two special cases which will override the data format string.\n" +
                 "\n" +
@@ -34,10 +51,14 @@ import liquibase.util.BooleanParser;
         since="1.7")
 public class LoadDataChange extends AbstractChange implements ChangeWithColumns<LoadDataColumnConfig> {
 
+    /** CSV Lines starting with that sign(s) will be treated as comments by default */
+    public static final String DEFAULT_COMMENT_PATTERN = "#";
+
     private String catalogName;
     private String schemaName;
     private String tableName;
     private String file;
+    private String commentLineStartsWith = DEFAULT_COMMENT_PATTERN;
     private Boolean relativeToChangelogFile;
     private String encoding = null;
     private String separator = liquibase.util.csv.opencsv.CSVReader.DEFAULT_SEPARATOR + "";
@@ -91,6 +112,22 @@ public class LoadDataChange extends AbstractChange implements ChangeWithColumns<
 
     public void setFile(String file) {
         this.file = file;
+    }
+
+    public String getCommentLineStartsWith() {
+        return commentLineStartsWith;
+    }
+
+    public void setCommentLineStartsWith(String commentLineStartsWith) {
+
+        //if the value is null (not provided) we want to use default value
+        if (commentLineStartsWith == null) {
+            this.commentLineStartsWith = DEFAULT_COMMENT_PATTERN;
+        } else if(commentLineStartsWith.equals("")) {
+            this.commentLineStartsWith = null;
+        } else {
+            this.commentLineStartsWith = commentLineStartsWith;
+        }
     }
 
     public Boolean isRelativeToChangelogFile() {
@@ -162,22 +199,28 @@ public class LoadDataChange extends AbstractChange implements ChangeWithColumns<
                 throw new UnexpectedLiquibaseException("Data file "+getFile()+" was empty");
             }
 
-            List<SqlStatement> statements = new ArrayList<SqlStatement>();
+            InsertSetStatement statements = this.createStatementSet(getCatalogName(), getSchemaName(), getTableName());
             String[] line;
-            int lineNumber = 0;
+            int lineNumber = 1; // Start at '1' to take into account the header (already processed)
 
+            boolean isCommentingEnabled = StringUtils.isNotEmpty(commentLineStartsWith);
             while ((line = reader.readNext()) != null) {
                 lineNumber++;
-
-                if (line.length == 0 || (line.length == 1 && StringUtils.trimToNull(line[0]) == null)) {
+                if (line.length == 0 || (line.length == 1 && StringUtils.trimToNull(line[0]) == null)
+                        || (isCommentingEnabled && isLineCommented(line))) {
                     continue; //nothing on this line
                 }
+                
+                // Ensure eaech line has the same number of columns defined as does the header.
+                // (Failure could indicate unquoted strings with commas, for example).
+                if (line.length != headers.length)
+                {
+                    throw new UnexpectedLiquibaseException("CSV file " + getFile() + " Line " + lineNumber + " has " + line.length + " values defined, Header has " + headers.length + ". Numbers MUST be equal (check for unquoted string with embedded commas)");
+                }
+
                 InsertStatement insertStatement = this.createStatement(getCatalogName(), getSchemaName(), getTableName());
                 for (int i=0; i<headers.length; i++) {
                     String columnName = null;
-                    if( i >= line.length ) {
-                      throw new UnexpectedLiquibaseException("CSV Line " + lineNumber + " has only " + (i-1) + " columns, the header has " + headers.length);
-                    }
 
                     Object value = line[i];
 
@@ -222,10 +265,20 @@ public class LoadDataChange extends AbstractChange implements ChangeWithColumns<
 
                     insertStatement.addColumnValue(columnName, value);
                 }
-                statements.add(insertStatement);
+                statements.addInsertStatement(insertStatement);
             }
 
-            return statements.toArray(new SqlStatement[statements.size()]);
+            if (database instanceof MSSQLDatabase || database instanceof MySQLDatabase || database instanceof PostgresDatabase) {
+                List<InsertStatement> innerStatements = statements.getStatements();
+                if (innerStatements != null && innerStatements.size() > 0 && innerStatements.get(0) instanceof InsertOrUpdateStatement) {
+                    //cannot do insert or update in a single statement
+                    return statements.getStatementsArray();
+                }
+                // we only return a single "statement" - it's capable of emitting multiple sub-statements, should the need arise, on generation.
+                return new SqlStatement[]{statements};
+            } else {
+                return statements.getStatementsArray();
+            }
         } catch (IOException e) {
             throw new RuntimeException(e);
         } catch (UnexpectedLiquibaseException ule) {
@@ -245,6 +298,10 @@ public class LoadDataChange extends AbstractChange implements ChangeWithColumns<
 				}
 			}
 		}
+    }
+
+    private boolean isLineCommented(String[] line) {
+        return StringUtils.startsWith(line[0], commentLineStartsWith);
     }
 
     @Override
@@ -287,6 +344,10 @@ public class LoadDataChange extends AbstractChange implements ChangeWithColumns<
         return new InsertStatement(catalogName, schemaName,tableName);
     }
 
+    protected InsertSetStatement createStatementSet(String catalogName, String schemaName, String tableName){
+        return new InsertSetStatement(catalogName, schemaName,tableName);
+    }
+
     protected ColumnConfig getColumnConfig(int index, String header) {
         for (LoadDataColumnConfig config : columns) {
             if (config.getIndex() != null && config.getIndex().equals(index)) {
@@ -321,8 +382,8 @@ public class LoadDataChange extends AbstractChange implements ChangeWithColumns<
             if (stream == null) {
                 throw new UnexpectedLiquibaseException(getFile() + " could not be found");
             }
-            stream = new BufferedInputStream(stream);
-            return CheckSum.compute(getTableName()+":"+CheckSum.compute(stream, true));
+            stream = new EmptyLineAndCommentSkippingInputStream(stream, commentLineStartsWith);
+            return CheckSum.compute(getTableName()+":"+CheckSum.compute(stream, /*standardizeLineEndings*/ true));
         } catch (IOException e) {
             throw new UnexpectedLiquibaseException(e);
         } finally {

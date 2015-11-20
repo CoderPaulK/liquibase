@@ -9,6 +9,7 @@ import liquibase.sqlgenerator.SqlGenerator;
 import liquibase.sqlgenerator.SqlGeneratorChain;
 import liquibase.statement.core.AddUniqueConstraintStatement;
 import liquibase.structure.core.Column;
+import liquibase.structure.core.Index;
 import liquibase.structure.core.Table;
 import liquibase.structure.core.UniqueConstraint;
 import liquibase.util.StringUtils;
@@ -30,6 +31,10 @@ public class AddUniqueConstraintGenerator extends AbstractSqlGenerator<AddUnique
         ValidationErrors validationErrors = new ValidationErrors();
         validationErrors.checkRequiredField("columnNames", addUniqueConstraintStatement.getColumnNames());
         validationErrors.checkRequiredField("tableName", addUniqueConstraintStatement.getTableName());
+
+        if (!(database instanceof OracleDatabase)) {
+            validationErrors.checkDisallowedField("forIndexName", addUniqueConstraintStatement.getForIndexName(), database);
+        }
         return validationErrors;
     }
 
@@ -49,20 +54,18 @@ public class AddUniqueConstraintGenerator extends AbstractSqlGenerator<AddUnique
 					, database.escapeColumnNameList(statement.getColumnNames())
 			);
 		}
-		if(database instanceof OracleDatabase) {
-	        if (statement.isDeferrable() || statement.isInitiallyDeferred()) {
-	            if (statement.isDeferrable()) {
-	            	sql += " DEFERRABLE";
-	            }
+		if(database instanceof OracleDatabase || database instanceof PostgresDatabase) {
+            if (statement.isDeferrable()) {
+                sql += " DEFERRABLE";
+            }
 
-	            if (statement.isInitiallyDeferred()) {
-	            	sql +=" INITIALLY DEFERRED";
-	            }
-	        }
+            if (statement.isInitiallyDeferred()) {
+                sql +=" INITIALLY DEFERRED";
+            }
             if (statement.isDisabled()) {
                 sql +=" DISABLE";
             }
-		}
+        }
 
         if (StringUtils.trimToNull(statement.getTablespace()) != null && database.supportsTablespaces()) {
             if (database instanceof MSSQLDatabase) {
@@ -74,6 +77,10 @@ public class AddUniqueConstraintGenerator extends AbstractSqlGenerator<AddUnique
             } else {
                 sql += " USING INDEX TABLESPACE " + statement.getTablespace();
             }
+        }
+
+        if (statement.getForIndexName() != null) {
+            sql += " USING INDEX "+database.escapeObjectName(statement.getForIndexCatalogName(), statement.getForIndexSchemaName(), statement.getForIndexName(), Index.class);
         }
 
         return new Sql[] {
